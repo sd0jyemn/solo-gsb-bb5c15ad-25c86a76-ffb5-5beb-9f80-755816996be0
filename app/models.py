@@ -341,3 +341,95 @@ class BatchIdentifyResponse(BaseModel):
     assignment_reason: str = Field(
         description="中文分配依据：可用边阈值、三级优化目标与字典序破同分如何决定唯一结果"
     )
+
+
+# ------------------------------------------------- 自适应决策树（decision-tree）模型
+
+class DecisionEnzymeInput(BaseModel):
+    name: str = Field(..., min_length=1, description="酶名称，如 EcoRI")
+    genotype_sites: dict[str, list[int]] = Field(
+        ...,
+        description="按基因型名映射的候选切点：基因型名 -> 该基因型上的切点位置列表（bp，0-based）",
+    )
+
+
+class DecisionTreeRequest(BaseModel):
+    plasmid_length: int = Field(..., gt=0, description="环状质粒总长度（bp）")
+    min_visible_fragment: int = Field(
+        ..., ge=0, description="最小可见片段长度（bp），短于此值的片段不参与条带聚类"
+    )
+    band_resolution_tolerance: int = Field(
+        ..., ge=0, description="条带分辨容差（bp）：长度差不超过该值的相邻片段聚为同一条带"
+    )
+    enzymes: list[DecisionEnzymeInput] = Field(
+        ..., min_length=2, description="参与枚举的酶，至少 2 种，名称不可重复"
+    )
+
+
+class DecisionPairOut(BaseModel):
+    enzyme_pair: list[str]
+    pair_key: str
+
+
+class DecisionBranchOut(BaseModel):
+    signature: list[float] = Field(
+        description="该分支对应的规范化条带签名（各条带代表长度，bp，升序）"
+    )
+    genotypes: list[str] = Field(
+        description="落入此签名分支的基因型名（按字典序）；叶节点时恰好 1 个或为不可区分组"
+    )
+    child: "DecisionTreeNodeOut" = Field(description="该分支的子节点（内部节点或叶节点）")
+
+
+class DecisionTreeNodeOut(BaseModel):
+    node_id: int = Field(description="节点编号，按先根遍历从 1 开始")
+    depth: int = Field(description="节点深度：根节点为 0，每做一次实验 +1")
+    node_type: Literal["internal", "leaf"]
+    candidates: list[str] = Field(
+        description="到达该节点时尚待区分的基因型名（按字典序）"
+    )
+    pair_key: str | None = Field(
+        default=None, description="内部节点：本节点选用的酶对（实验）；叶节点为 null"
+    )
+    enzyme_pair: list[str] | None = Field(
+        default=None, description="内部节点：本节点酶对的两个酶名（字典序）；叶节点为 null"
+    )
+    branches: list[DecisionBranchOut] | None = Field(
+        default=None,
+        description="内部节点：按观测签名分组的分支，按签名向量字典序排列；叶节点为 null",
+    )
+    indistinguishable: bool = Field(
+        default=False, description="叶节点：候选基因型是否为永远无法区分的不可区分组（多于 1 个）"
+    )
+
+
+class DecisionTreeResponse(BaseModel):
+    plasmid_length: int
+    min_visible_fragment: int
+    band_resolution_tolerance: int
+    genotype_count: int = Field(description="请求中的基因型数量")
+    genotypes: list[str] = Field(description="全部基因型名（按字典序）")
+    total_enzyme_pairs: int = Field(description="不同酶对总数，等于 C(酶数, 2)")
+    discriminating_pair_count: int = Field(
+        description="至少能拆分某两个基因型、实际参与决策树搜索的酶对数"
+    )
+    non_discriminating_pairs: list[DecisionPairOut] = Field(
+        description="对全部基因型产生相同签名、无法拆分任何集合的酶对（按 pair_key 字典序）"
+    )
+    tree: DecisionTreeNodeOut = Field(description="自适应决策树根节点")
+    worst_case_depth: int = Field(
+        description="最坏实验次数：根到叶的最大深度（每一层内部节点为一次双酶切实验）"
+    )
+    internal_node_count: int = Field(description="决策树内部节点（实验）总数")
+    leaf_count: int = Field(description="决策树叶节点总数")
+    indistinguishable_group_count: int = Field(description="不可区分组（非单叶）数量")
+    indistinguishable_groups: list[list[str]] = Field(
+        description="永远无法区分的基因型组：所有酶对上签名都相同的基因型集合"
+        "（组内与各组均按字典序排列）；全部基因型可区分时为空"
+    )
+    tree_reason: str = Field(
+        description="中文依据：规范化签名、不可区分合并、极小化极大目标与破同分规则"
+    )
+
+
+DecisionBranchOut.model_rebuild()

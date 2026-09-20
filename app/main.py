@@ -8,12 +8,15 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.batch_identify import resolve_batch_identify
+from app.decision_tree import build_decision_tree
 from app.digest import recommend
 from app.identify import identify
 from app.mixture import resolve_mixture
 from app.models import (
     BatchIdentifyRequest,
     BatchIdentifyResponse,
+    DecisionTreeRequest,
+    DecisionTreeResponse,
     DigestRequest,
     DigestResponse,
     HealthResponse,
@@ -28,13 +31,14 @@ from app.panel import build_panel
 from app.validation import (
     DigestValidationError,
     validate_batch_identify_request,
+    validate_decision_tree_request,
     validate_identify_request,
     validate_mixture_request,
     validate_panel_request,
     validate_request,
 )
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 app = FastAPI(
     title="Circular DNA Double-Digest Discrimination Service",
@@ -47,7 +51,10 @@ app = FastAPI(
         "成分子集，先按容差单连接合并共迁移预测条带再做一对一匹配，"
         "唯一选定与一次混合样本观测最吻合的成分组合；还可对多个命名预测谱型与"
         "多个命名观测泳道批量做盲样全局一对一分配（最大化已分配泳道数、"
-        "最小化未匹配总数与总误差，字典序破同分）。"
+        "最小化未匹配总数与总误差，字典序破同分）；还可为多个基因型复用同一套"
+        "圆环酶切与聚带规则生成规范化条带签名，以记忆化极小化极大搜索精确生成"
+        "最小化最坏实验次数的自适应双酶切决策树（同深度依次取内部节点更少、"
+        "酶对键字典序更小的方案）。"
     ),
     version=VERSION,
 )
@@ -132,6 +139,17 @@ async def digest_mixture(req: MixtureRequest) -> MixtureResponse:
 async def digest_batch_identify(req: BatchIdentifyRequest) -> BatchIdentifyResponse:
     validate_batch_identify_request(req)
     return resolve_batch_identify(req)
+
+
+@app.post(
+    "/api/v1/digest/decision-tree",
+    response_model=DecisionTreeResponse,
+    tags=["digest"],
+    summary="为多个基因型精确生成最小化最坏实验次数的自适应双酶切决策树",
+)
+async def digest_decision_tree(req: DecisionTreeRequest) -> DecisionTreeResponse:
+    validate_decision_tree_request(req)
+    return build_decision_tree(req)
 
 
 if __name__ == "__main__":

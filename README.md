@@ -1,12 +1,13 @@
 # 环状 DNA 双酶切鉴别服务
 
-基于 FastAPI 的圆形（环状）DNA 双酶切鉴别服务，提供五个互补接口：
+基于 FastAPI 的圆形（环状）DNA 双酶切鉴别服务，提供六个互补接口：
 
 - **方案推荐**：客户端提交质粒长度、参考型与变异型的候选酶切位点、最小可见片段长度和条带分辨容差，服务枚举所有不同酶对，按圆环相邻切点计算两种样本的片段长度，将容差内的片段聚为同一条电泳条带，并推荐能够区分两种样本的酶对。
 - **样本鉴别**：客户端提交同一质粒参考型、变异型的预测条带长度和一次凝胶观测长度列表，服务在给定容差内做确定性的一对一最小代价匹配，分别计算两种样本的缺失条带、额外条带与总误差，判定观测样本为参考型、变异型或无法区分。
 - **最小酶对面板**：客户端提交质粒长度、可见阈值、分辨容差及酶列表（每种酶给出参考型切点和按变异名映射的变异型切点），服务复用同一套圆环酶切与聚带规则评估每个酶对对每个变异型的可区分条带，并**精确**求出覆盖全部变异型的最小酶对面板（非贪心近似）。
 - **混合样本解析**：客户端提交若干**命名候选成分**各自的预测条带、一次混合样本观测条带、匹配容差与成分数上限，服务枚举不超过上限的全部候选子集，先把每个子集的预测条带按容差做单连接聚带（共迁移条带只出现一次、代表长度取均值），再复用鉴别接口的一对一最小代价匹配，按未匹配条带数、总误差、成分数、候选名列表字典序唯一选定最吻合的成分组合。
 - **批量盲样分配**：客户端提交若干**命名预测谱型**与若干**命名观测泳道**、条带匹配容差和单条分配允许的最大未匹配条带数，服务先复用鉴别接口的一对一条带匹配评估每条“谱型-泳道”边（未匹配数超阈值的边不可用），再在可用边上做**全局一对一分配**，依次最大化已分配泳道数、最小化未匹配总数、最小化总误差，并以泳道名排序后的谱型名序列字典序破同分，返回逐项匹配依据、未分配泳道与未使用谱型。
+- **自适应决策树**：客户端提交质粒长度、可见阈值、分辨容差及各基因型在各酶上的切点，服务为每个酶对 × 每个基因型复用同一套圆环酶切与聚带规则生成**规范化条带签名**，先按全部酶对上的签名向量合并永远无法区分的基因型，再以“候选等价类集合 + 剩余酶对”为状态做**记忆化极小化极大搜索**，精确生成最小化最坏实验次数的自适应决策树（同深度依次取内部节点更少、酶对键字典序更小的方案，忽略不能拆分当前集合的酶对）。
 
 **核心功能为纯本地数学计算，不依赖数据库、缓存或任何外部服务。**
 
@@ -47,6 +48,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | 最小酶对面板 | POST | `http://localhost:8000/api/v1/digest/panel` |
 | 混合样本解析 | POST | `http://localhost:8000/api/v1/digest/mixture` |
 | 批量盲样分配 | POST | `http://localhost:8000/api/v1/digest/batch-identify` |
+| 自适应决策树 | POST | `http://localhost:8000/api/v1/digest/decision-tree` |
 | 交互式 API 文档（Swagger） | GET | `http://localhost:8000/docs` |
 | OpenAPI Schema | GET | `http://localhost:8000/openapi.json` |
 
@@ -54,7 +56,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ```bash
 curl http://localhost:8000/health
-# {"status":"ok","service":"circular-dna-digest","version":"1.4.0"}
+# {"status":"ok","service":"circular-dna-digest","version":"1.5.0"}
 ```
 
 ---
@@ -74,6 +76,8 @@ curl http://localhost:8000/health
 | `MAX_MIXTURE_CANDIDATES` | `12` | mixture 接口允许的最大候选成分数（需枚举至多该规模的全部子集） | 编辑 `environment` |
 | `MAX_BATCH_PROFILES` | `32` | batch-identify 接口允许的最大预测谱型数（候选边数为谱型数 × 泳道数） | 编辑 `environment` |
 | `MAX_BATCH_LANES` | `32` | batch-identify 接口允许的最大观测泳道数（全局一对一分配为最小费用最大流） | 编辑 `environment` |
+| `MAX_DECISION_GENOTYPES` | `12` | decision-tree 接口允许的最大基因型数（极小化极大搜索状态随基因型数增长） | 编辑 `environment` |
+| `MAX_DECISION_ENZYMES` | `10` | decision-tree 接口允许的最大酶数量（酶对数为 C(n,2)，独立于 `MAX_ENZYMES`） | 编辑 `environment` |
 
 ---
 
@@ -336,6 +340,47 @@ curl -X POST http://localhost:8000/api/v1/digest/batch-identify \
 - `evaluated_edge_count` = 谱型数 × 泳道数；`eligible_edge_count` 为未匹配数不超过上限、实际参与全局分配的边数。
 - `assigned_lane_count` / `total_unmatched_count` / `total_error`：最优分配的三级目标值；`assignment_reason` 为中文依据，可由响应中的逐项计数复算。
 
+### 自适应决策树（POST `/api/v1/digest/decision-tree`）
+
+#### 请求体（JSON）
+
+| 字段 | 类型 | 约束 |
+| --- | --- | --- |
+| `plasmid_length` | int | > 0，环状质粒总长度（bp），切点合法范围为 `0 ~ plasmid_length-1` |
+| `min_visible_fragment` | int | ≥ 0 且 < 质粒长度；短于此长度的片段不参与条带聚类 |
+| `band_resolution_tolerance` | int | ≥ 0，条带分辨容差（bp） |
+| `enzymes` | array | 至少 2 种酶，酶名称不可重复；基因型名集合在所有酶间必须完全一致 |
+| `enzymes[].name` | string | 酶名称，如 `EcoRI` |
+| `enzymes[].genotype_sites` | object | 按基因型名映射的候选切点：`{"基因型名": [切点...]}`，至少定义 1 个基因型 |
+
+基因型数不超过 `MAX_DECISION_GENOTYPES`（默认 12）、酶数不超过独立上限 `MAX_DECISION_ENZYMES`（默认 10）。请求示例见 [`examples/decision-tree-request.json`](examples/decision-tree-request.json)：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/digest/decision-tree \
+  -H 'Content-Type: application/json' \
+  -d @examples/decision-tree-request.json
+```
+
+#### 算法说明（决策树）
+
+1. **规范化条带签名**：对每一对不同酶（酶名按字典序规范化）× 每一个基因型，复用推荐接口的同一套规则：合并两酶切点（同位点合并）、按圆环相邻切点计算片段（末段 `p0 + L − p_last` 跨原点）、保留长度 ≥ 可见阈值的可见片段，再按分辨容差做**单连接聚带**（相邻片段长度差 ≤ 容差同簇、链式可传递），每簇代表长度取簇内均值（保留两位小数），得到该基因型在该酶对上的规范化签名（代表长度元组，升序）。某基因型在某酶对上有效切点不足 2 个时签名为空元组（与混合接口的共迁移聚带同一纯函数）。
+2. **不可区分组合并**：一个基因型在**全部酶对**上的签名构成其签名向量；签名向量完全相同的基因型在任何酶对上都共分支，永远无法区分，先合并为等价类（候选等价类集合）。全部基因型不可区分时树为单个叶节点（`worst_case_depth = 0`）。
+3. **记忆化极小化极大搜索**：状态为 `(候选等价类集合, 剩余酶对集合)`。内部节点选择一个**剩余且能拆分当前集合**的酶对做实验，按观测签名把候选类分成若干分支（不能拆分当前集合的酶对直接忽略），递归求解；节点代价为 `1 + max(各分支最坏深度)`。状态做记忆化，因此得到的是**精确的最小最坏实验次数，不是贪心近似**。
+4. **同深度破同分**：最坏深度相同时依次取 ① 子树**内部节点总数更少**（一次多分支拆分优先于多层二分支）、② 酶对 **`pair_key` 字典序更小**（酶对按键序枚举，首个最优保留）。基因型划分完全相同的酶对在搜索中完全等价（同为 `available` 时可互换），只保留 `pair_key` 最小的代表参与搜索，不改变最优值。
+5. **顺序无关**：全部规范化只依赖切点数据（基因型、酶、切点列表均先排序），分支按签名向量字典序输出，响应与输入提交顺序无关。
+
+#### 响应要点（决策树）
+
+- `genotypes` / `genotype_count`：全部基因型名（字典序）；`total_enzyme_pairs` = C(酶数, 2)。
+- `discriminating_pair_count` / `non_discriminating_pairs`：至少能拆分某两个基因型的酶对数，及对全部基因型签名相同、无法拆分任何集合的酶对（按 `pair_key` 字典序）。
+- `tree`：决策树根节点（递归结构），每个节点包含
+  - `node_id`（按先根遍历从 1 开始）、`depth`（根为 0，每做一次实验 +1）、`node_type`（`internal` / `leaf`）、`candidates`（到达该节点时尚待区分的基因型，字典序）；
+  - 内部节点：`pair_key` / `enzyme_pair`（本节点选用的酶对）与 `branches`（按观测签名分组，按签名向量字典序排列；每个分支含 `signature`、落入该签名的 `genotypes` 与递归 `child`）；
+  - 叶节点：`indistinguishable` 为 `true` 时该叶是一个永远无法区分的不可区分组（多于 1 个基因型）。
+- `worst_case_depth`：最坏实验次数（根到叶最大深度）；`internal_node_count`：实验节点总数；`leaf_count`：叶节点总数。
+- `indistinguishable_groups` / `indistinguishable_group_count`：永远无法区分的基因型组（组内与各组均按字典序）；全部基因型可区分时为空。
+- `tree_reason`：中文依据，说明签名规范化、不可区分合并、极小化极大目标与两级破同分规则。
+
 ### 拒绝条件（HTTP 422）
 
 以下输入问题整体拒绝，返回统一结构 `{"code":"validation_failed","errors":[...]}`，一次性报告全部错误：
@@ -377,7 +422,14 @@ curl -X POST http://localhost:8000/api/v1/digest/batch-identify \
 - `max_unmatched_bands` 缺失、非整数或为负；`band_match_tolerance` 为负 / 缺失 / 非数值；
 - 任一条带列表超过 `MAX_BANDS` 上限。
 
-注意：推荐接口中切点不足两个属于**酶对级别**的拒绝（记录在 `rejected_pairs`，HTTP 200），而非请求级别错误；面板接口中某变异型无可用酶对时同样返回 HTTP 200（列入 `uncovered_variants`，不返回部分面板）；批量盲样分配接口中所有候选边都超过未匹配阈值时同样返回 HTTP 200（`assignments` 为空、全部泳道列入 `unassigned_lanes`）。
+自适应决策树接口（`/api/v1/digest/decision-tree`）：
+
+- 任一基因型的切点越界（`< 0` 或 `≥ plasmid_length`）、同一酶同一基因型位点重复；
+- 酶名称重复、酶少于 2 种、酶数量超过独立上限 `MAX_DECISION_ENZYMES`（默认 10）；
+- 各酶的基因型名集合不一致、基因型名为空白、未定义任何基因型、基因型数量超过独立上限 `MAX_DECISION_GENOTYPES`（默认 12）；
+- 质粒长度 ≤ 0、最小可见片段 ≥ 质粒长度、容差为负等字段约束错误。
+
+注意：推荐接口中切点不足两个属于**酶对级别**的拒绝（记录在 `rejected_pairs`，HTTP 200），而非请求级别错误；面板接口中某变异型无可用酶对时同样返回 HTTP 200（列入 `uncovered_variants`，不返回部分面板）；批量盲样分配接口中所有候选边都超过未匹配阈值时同样返回 HTTP 200（`assignments` 为空、全部泳道列入 `unassigned_lanes`）；决策树接口中某基因型在某酶对上切点不足 2 个或某酶对对全部基因型签名相同，均属于**酶对级别**结果（空签名 / 列入 `non_discriminating_pairs`，HTTP 200），永远无法区分的基因型列入 `indistinguishable_groups`。
 
 ---
 
@@ -386,14 +438,15 @@ curl -X POST http://localhost:8000/api/v1/digest/batch-identify \
 ```
 .
 ├── app/
-│   ├── main.py          # FastAPI 入口：健康检查、推荐/鉴别/面板/混合/批量分配路由、统一 422 处理
+│   ├── main.py          # FastAPI 入口：健康检查、推荐/鉴别/面板/混合/批量分配/决策树路由、统一 422 处理
 │   ├── models.py        # 请求/响应 Pydantic 模型
-│   ├── validation.py    # 越界、重复位点、变异名一致性、条带/候选规模等语义校验
+│   ├── validation.py    # 越界、重复位点、名称一致性、条带/候选/基因型规模等语义校验
 │   ├── digest.py        # 圆环片段、条带聚类、酶对枚举与排序（纯函数）
 │   ├── identify.py      # 条带一对一最小代价匹配与样本判定（纯函数）
 │   ├── panel.py         # 逐变异评估与精确最小酶对面板（纯函数）
 │   ├── mixture.py       # 混合样本共迁移聚带、子集枚举与最优子集选定（纯函数）
 │   ├── batch_identify.py # 批量盲样谱型-泳道边评估与全局一对一最小费用最大流分配（纯函数）
+│   ├── decision_tree.py # 规范化条带签名、不可区分合并与记忆化极小化极大决策树（纯函数）
 │   └── config.py        # 环境变量配置（均有默认值）
 ├── tests/               # pytest 单元 + API 端到端测试
 ├── examples/request.json
@@ -401,6 +454,7 @@ curl -X POST http://localhost:8000/api/v1/digest/batch-identify \
 ├── examples/panel-request.json
 ├── examples/mixture-request.json
 ├── examples/batch-identify-request.json
+├── examples/decision-tree-request.json
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt

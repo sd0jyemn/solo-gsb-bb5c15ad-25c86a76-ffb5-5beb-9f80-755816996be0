@@ -25,5 +25,10 @@ class Settings:
     MAX_BATCH_PROFILES: int = int(os.getenv("MAX_BATCH_PROFILES", "32"))
     MAX_BATCH_LANES: int = int(os.getenv("MAX_BATCH_LANES", "32"))
 
+    # decision-tree 接口独立的规模上限：极小化极大搜索的记忆化状态为
+    # “候选基因型集合 × 剩余酶对集合”，规模随基因型数与酶对数快速增长
+    MAX_DECISION_GENOTYPES: int = int(os.getenv("MAX_DECISION_GENOTYPES", "12"))
+    MAX_DECISION_ENZYMES: int = int(os.getenv("MAX_DECISION_ENZYMES", "10"))
+
 
 settings = Settings()
