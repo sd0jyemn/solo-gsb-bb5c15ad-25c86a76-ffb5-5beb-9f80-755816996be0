@@ -341,3 +341,88 @@ class BatchIdentifyResponse(BaseModel):
     assignment_reason: str = Field(
         description="中文分配依据：可用边阈值、三级优化目标与字典序破同分如何决定唯一结果"
     )
+
+
+# ------------------------------------------- 自适应决策树（decision-tree）模型
+
+class DecisionTreeEnzymeInput(BaseModel):
+    name: str = Field(..., min_length=1, description="酶名称，如 EcoRI")
+    genotype_sites: dict[str, list[int]] = Field(
+        default_factory=dict,
+        description="按基因型名映射的候选切点：基因型名 -> 该基因型上的切点位置列表"
+        "（bp，0-based）；所有酶必须定义完全相同的基因型名集合",
+    )
+
+
+class DecisionTreeRequest(BaseModel):
+    plasmid_length: int = Field(..., gt=0, description="环状质粒总长度（bp）")
+    min_visible_fragment: int = Field(
+        ..., ge=0, description="最小可见片段长度（bp，可见阈值），短于此值的片段不参与条带聚类"
+    )
+    band_resolution_tolerance: int = Field(
+        ..., ge=0, description="条带分辨容差（bp），长度差不超过该值的相邻可见片段聚为同一条带"
+    )
+    enzymes: list[DecisionTreeEnzymeInput] = Field(
+        ..., min_length=2, description="参与枚举的酶，至少 2 种；每酶给出各基因型切点"
+    )
+
+
+class DecisionTreeBranchOut(BaseModel):
+    signature: list[float] = Field(
+        description="走到该分支所观测到的规范化条带签名（簇代表长度，升序）；空签名为空列表"
+    )
+    child: "DecisionTreeNodeOut" = Field(description="该签名结果下的子树")
+
+
+class DecisionTreeNodeOut(BaseModel):
+    type: Literal["internal", "leaf"] = Field(description="节点类型：实验节点 / 结论叶子")
+    depth: int = Field(description="节点深度（根为 0），等于到达该节点已做的实验次数")
+    pair_key: str | None = Field(description="本实验节点选用的酶对键（叶子为 null）")
+    enzyme_pair: list[str] | None = Field(description="本实验节点选用的酶对（叶子为 null）")
+    candidate_count: int = Field(description="到达该节点时尚未排除的候选等价类数")
+    branches: list[DecisionTreeBranchOut] = Field(
+        default_factory=list,
+        description="实验节点按观测签名展开的分支，按签名升序（空签名在最前）；叶子为空",
+    )
+    genotypes: list[str] = Field(
+        default_factory=list,
+        description="叶子的最终结论：该等价类包含的基因型名（组内字典序）；内部节点为空",
+    )
+
+
+class DecisionTreePairSignatureOut(BaseModel):
+    enzyme_pair: list[str]
+    pair_key: str
+    signatures: dict[str, list[float]] = Field(
+        description="各基因型在该酶对上的规范化条带签名（基因型名 -> 簇代表长度升序列表）"
+    )
+    insufficient_cut_genotypes: list[str] = Field(
+        default_factory=list,
+        description="在该酶对上有效切点不足 2 个（或无可见片段）、签名为空的基因型名",
+    )
+
+
+class DecisionTreeResponse(BaseModel):
+    plasmid_length: int
+    min_visible_fragment: int
+    band_resolution_tolerance: int
+    genotype_count: int = Field(description="请求中全部基因型的数量")
+    total_enzyme_pairs: int = Field(description="枚举到的酶对总数 C(酶数, 2)")
+    worst_case_depth: int = Field(
+        description="最优自适应决策树的最坏实验次数（根到叶子的最大深度）"
+    )
+    internal_node_count: int = Field(description="决策树内部节点（实验节点）总数")
+    leaf_count: int = Field(description="决策树叶子（最终结论）总数")
+    indistinguishable_groups: list[list[str]] = Field(
+        description="在全部酶对上签名相同、永远无法相互区分的基因型组（组内字典序，组间按首名排序）"
+    )
+    tree: DecisionTreeNodeOut = Field(description="规范化的自适应决策树根节点")
+    pair_signatures: list[DecisionTreePairSignatureOut] = Field(
+        description="逐酶对的各基因型规范化条带签名，按 pair_key 字典序"
+    )
+    reason: str = Field(
+        description="中文依据：不可区分组合并与极小极大选择次序如何决定唯一结果"
+    )
+
+
+DecisionTreeBranchOut.model_rebuild()

@@ -21,6 +21,9 @@ services:
       # batch-identify 接口允许的最大谱型数与泳道数（候选边数为两者乘积）
       MAX_BATCH_PROFILES: "32"
       MAX_BATCH_LANES: "32"
+      # decision-tree 接口的独立规模上限（记忆化极小极大的状态数组合增长）
+      MAX_DECISION_TREE_ENZYMES: "12"
+      MAX_DECISION_TREE_GENOTYPES: "10"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import os,sys,urllib.request; port=os.getenv('APP_PORT','8000'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3).status==200 else 1)"]

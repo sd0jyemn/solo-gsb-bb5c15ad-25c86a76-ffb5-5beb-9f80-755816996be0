@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from app.config import settings
 from app.models import (
     BatchIdentifyRequest,
+    DecisionTreeRequest,
     DigestRequest,
     IdentifyRequest,
     MixtureRequest,
@@ -321,6 +322,99 @@ def validate_batch_identify_request(req: BatchIdentifyRequest) -> BatchIdentifyR
                     f"超过允许上限 {settings.MAX_BANDS}",
                     "too_many_bands",
                 ))
+
+    if errors:
+        raise DigestValidationError(errors)
+    return req
+
+
+def validate_decision_tree_request(req: DecisionTreeRequest) -> DecisionTreeRequest:
+    """decision-tree 接口的语义校验：位点越界/重复、基因型名一致性与独立规模上限。
+
+    基础字段约束（质粒长度、可见阈值、容差、酶数量下限等）由 Pydantic
+    模型直接拦截，与此处一样输出统一结构的 422 响应。
+    """
+    errors: list[dict] = []
+    length = req.plasmid_length
+
+    if req.min_visible_fragment >= length:
+        errors.append(_err(
+            ["min_visible_fragment"],
+            f"最小可见片段长度（{req.min_visible_fragment}）必须小于质粒长度（{length}）",
+            "min_visible_too_large",
+        ))
+
+    if len(req.enzymes) > settings.MAX_DECISION_TREE_ENZYMES:
+        errors.append(_err(
+            ["enzymes"],
+            f"酶数量（{len(req.enzymes)}）超过 decision-tree 接口允许上限 "
+            f"{settings.MAX_DECISION_TREE_ENZYMES}",
+            "too_many_decision_tree_enzymes",
+        ))
+
+    all_genotypes: set[str] = set()
+    for enzyme in req.enzymes:
+        all_genotypes.update(enzyme.genotype_sites)
+
+    seen_names: set[str] = set()
+    for i, enzyme in enumerate(req.enzymes):
+        name = enzyme.name
+        if name in seen_names:
+            errors.append(_err(
+                ["enzymes", i, "name"],
+                f"酶名称重复：{name}",
+                "duplicate_enzyme_name",
+            ))
+        seen_names.add(name)
+
+        if set(enzyme.genotype_sites) != all_genotypes:
+            errors.append(_err(
+                ["enzymes", i, "genotype_sites"],
+                f"酶 {name} 的基因型名 {sorted(enzyme.genotype_sites)} 与请求中其他酶不一致："
+                f"所有酶必须定义完全相同的基因型名集合 {sorted(all_genotypes)}",
+                "inconsistent_genotype_names",
+            ))
+
+        for gname, gsites in enzyme.genotype_sites.items():
+            if not gname.strip():
+                errors.append(_err(
+                    ["enzymes", i, "genotype_sites"],
+                    f"酶 {name} 存在空白基因型名",
+                    "invalid_genotype_name",
+                ))
+                continue
+
+            out_of_range = [s for s in gsites if s < 0 or s >= length]
+            if out_of_range:
+                errors.append(_err(
+                    ["enzymes", i, "genotype_sites", gname],
+                    f"酶 {name} 在基因型 {gname} 中存在越界切点 {out_of_range}："
+                    f"合法范围为 0 ~ {length - 1}",
+                    "site_out_of_range",
+                ))
+
+            unique_sites = set(gsites)
+            if len(unique_sites) != len(gsites):
+                dupes = sorted({s for s in gsites if gsites.count(s) > 1})
+                errors.append(_err(
+                    ["enzymes", i, "genotype_sites", gname],
+                    f"酶 {name} 在基因型 {gname} 中存在重复切点 {dupes}",
+                    "duplicate_site",
+                ))
+
+    if not all_genotypes:
+        errors.append(_err(
+            ["enzymes"],
+            "至少需要定义 1 个基因型：所有酶的 genotype_sites 均为空",
+            "no_genotypes",
+        ))
+    elif len(all_genotypes) > settings.MAX_DECISION_TREE_GENOTYPES:
+        errors.append(_err(
+            ["enzymes"],
+            f"基因型数量（{len(all_genotypes)}）超过 decision-tree 接口允许上限 "
+            f"{settings.MAX_DECISION_TREE_GENOTYPES}",
+            "too_many_decision_tree_genotypes",
+        ))
 
     if errors:
         raise DigestValidationError(errors)

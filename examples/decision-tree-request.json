@@ -1,0 +1,37 @@
+{
+  "plasmid_length": 1000,
+  "min_visible_fragment": 10,
+  "band_resolution_tolerance": 0,
+  "enzymes": [
+    {
+      "name": "A",
+      "genotype_sites": {
+        "g1": [0, 100],
+        "g2": [0, 100],
+        "g3": [0, 100],
+        "g4": [0, 300],
+        "g5": [0, 100]
+      }
+    },
+    {
+      "name": "B",
+      "genotype_sites": {
+        "g1": [400],
+        "g2": [400],
+        "g3": [200],
+        "g4": [400],
+        "g5": [400]
+      }
+    },
+    {
+      "name": "C",
+      "genotype_sites": {
+        "g1": [700],
+        "g2": [550],
+        "g3": [550],
+        "g4": [550],
+        "g5": [550]
+      }
+    }
+  ]
+}
